@@ -195,18 +195,17 @@ class SearchManager implements ObjectManager
      */
     public function find($entityName, $id)
     {
-        $options = array();
         if (is_array($id)) {
-            if (!isset($id['id'])) {
+            if (!isset($id['id']))
                 throw new \InvalidArgumentException('An "id" field is required');
-            }
+
             $options = $id;
-            $id = $options['id'];
-            unset($options['id']);
+        } else {
+            $options = [$id];
         }
 
         $class = $this->getClassMetadata($entityName);
-        return $this->unitOfWork->load($class, $id, $options);
+        return $this->unitOfWork->load($class, $options);
     }
 
     /**

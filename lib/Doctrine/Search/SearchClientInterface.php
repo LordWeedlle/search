@@ -19,6 +19,7 @@
 
 namespace Doctrine\Search;
 
+use Doctrine\Search\Exception\NoResultException;
 use Doctrine\Search\Mapping\ClassMetadata;
 
 /**
@@ -34,49 +35,49 @@ interface SearchClientInterface
      * @param ClassMetadata $class
      * @param mixed $id
      * @param array $options
-     * @throws \Doctrine\Search\Exception\NoResultException
+     * @throws NoResultException
      */
     public function find(ClassMetadata $class, $id, $options = array());
 
     /**
-     * Finds document by specified field and value.
+     * Finds document by specified fields and values.
      *
      * @param ClassMetadata $class
-     * @param string $field
-     * @param mixed $value
-     * @throws \Doctrine\Search\Exception\NoResultException
+     * @param array $fields
+     *
+     * @throws NoResultException
      */
-    public function findOneBy(ClassMetadata $class, $field, $value);
+    public function findOneBy(ClassMetadata $class, array $fields);
 
     /**
      * Finds all documents
      *
-     * @param array $classes
+     * @param ClassMetadata $class
      */
-    public function findAll(array $classes);
+    public function findAll(ClassMetadata $class);
 
     /**
      * Finds documents by a specific query.
      *
-     * @param object $query
-     * @param array $classes
+     * @param ClassMetadata $class
+     * @param array         $query
      */
-    public function search($query, array $classes);
+    public function search(ClassMetadata $class, array $query);
 
     /**
      * Creates a document index
      *
      * @param string $name The name of the index.
-     * @param string $config The configuration of the index.
+     * @param array  $config The configuration of the index.
      */
     public function createIndex($name, array $config = array());
 
     /**
-     * Gets a document index reference
+     * Check if an index exists
      *
      * @param string $name The name of the index.
      */
-    public function getIndex($name);
+    public function indexExists($name);
 
     /**
      * Deletes an index and its types and documents
@@ -101,13 +102,6 @@ interface SearchClientInterface
     public function createType(ClassMetadata $metadata);
 
     /**
-     * Delete a document type
-     *
-     * @param ClassMetadata $metadata
-     */
-    public function deleteType(ClassMetadata $metadata);
-
-    /**
      * Adds documents of a given type to the specified index
      *
      * @param ClassMetadata $class
@@ -128,7 +122,7 @@ interface SearchClientInterface
      * without deleting the index itself
      *
      * @param ClassMetadata $class
-     * @param object $query
+     * @param array $query
      */
-    public function removeAll(ClassMetadata $class, $query = null);
+    public function removeAll(ClassMetadata $class, array $query = null);
 }
