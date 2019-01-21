@@ -19,10 +19,13 @@
 
 namespace Doctrine\Search;
 
+use Doctrine\Common\Annotations\AnnotationException;
+use Doctrine\Common\Annotations\AnnotationReader;
 use Doctrine\Common\Cache\Cache;
 use Doctrine\Common\Cache\ArrayCache;
 use Doctrine\Search\Mapping\ClassMetadataFactory;
 use Doctrine\Common\Persistence\Mapping\Driver\MappingDriver;
+use Doctrine\Search\Mapping\Driver\AnnotationDriver;
 use Doctrine\Search\Serializer\CallbackSerializer;
 use Doctrine\Common\Persistence\ObjectManager;
 
@@ -90,13 +93,14 @@ class Configuration
      *
      * @param array $paths
      *
-     * @return Mapping\Driver\AnnotationDriver
+     * @return AnnotationDriver
+     * @throws AnnotationException
      */
     public function newDefaultAnnotationDriver(array $paths = array())
     {
-        $reader = new \Doctrine\Common\Annotations\AnnotationReader();
+        $reader = new AnnotationReader;
 
-        return new \Doctrine\Search\Mapping\Driver\AnnotationDriver($reader, $paths);
+        return new AnnotationDriver($reader, $paths);
     }
 
     /**
@@ -173,8 +177,7 @@ class Configuration
      */
     public function getEntityManager()
     {
-        if (isset($this->attributes['entityManager'])) {
+        if (isset($this->attributes['entityManager']))
             return $this->attributes['entityManager'];
-        }
     }
 }

@@ -21,6 +21,7 @@ namespace Doctrine\Search;
 
 use Doctrine\Search\Exception\DoctrineSearchException;
 use Doctrine\Search\Exception\NoResultException;
+use Doctrine\Search\Mapping\ClassMetadata;
 use Elastica;
 
 class Query
@@ -37,11 +38,12 @@ class Query
     protected $sm;
 
     /**
-     * @var object
+     * @var array
      */
     protected $query;
 
     /**
+     * TODO: Check if it is an object or an array
      * @var object
      */
     protected $hydrationQuery;
@@ -52,9 +54,9 @@ class Query
     protected $hydrationParameter = self::HYDRATION_PARAMETER;
 
     /**
-     * @var array
+     * @var ClassMetadata
      */
-    protected $entityClasses;
+    protected $entityClass;
 
     /**
      * @var integer
@@ -77,6 +79,11 @@ class Query
     protected $count;
 
     /**
+     * @var integer
+     */
+    protected $total;
+
+    /**
      * @var array
      */
     protected $facets;
@@ -92,8 +99,12 @@ class Query
      *
      * @param string $method
      * @param array $arguments
+     *
+     * @throws DoctrineSearchException
+     *
+     * @return Query
      */
-    public function __call($method, $arguments)
+    public function __call($method, $arguments): Query
     {
         if (!$this->query) {
             throw new DoctrineSearchException('No client query has been provided using Query#searchWith().');
@@ -106,37 +117,35 @@ class Query
     /**
      * Specifies the searchable entity class to search against.
      *
-     * @param mixed $entityClasses
-     */
-    public function from($entityClasses)
-    {
-        $this->entityClasses = (array)$entityClasses;
-        return $this;
-    }
-
-    /**
-     * Add a searchable entity class to search against.
-     *
      * @param string $entityClass
+     *
+     * @return Query
      */
-    public function addFrom($entityClass)
+    public function from(string $entityClass): Query
     {
-        $this->entityClasses[] = $entityClass;
+        $this->entityClass = $entityClass;
+
         return $this;
     }
 
     /**
      * Set the query object to be executed on the search engine
      *
-     * @param mixed $query
+     * @param array $query
+     *
+     * @return Query
      */
-    public function searchWith($query)
+    public function searchWith(array $query): Query
     {
         $this->query = $query;
+
         return $this;
     }
 
-    protected function getSearchManager()
+    /**
+     * @return SearchManager
+     */
+    protected function getSearchManager(): SearchManager
     {
         return $this->sm;
     }
@@ -146,10 +155,13 @@ class Query
      * or bypass and return search result directly from the client
      *
      * @param integer $mode
+     *
+     * @return Query
      */
-    public function setHydrationMode($mode)
+    public function setHydrationMode($mode): Query
     {
         $this->hydrationMode = $mode;
+
         return $this;
     }
 
@@ -159,19 +171,24 @@ class Query
      *
      * @param boolean $useCache
      * @param integer $cacheLifetime
+     *
+     * @return Query
      */
-    public function useResultCache($useCache, $cacheLifetime = null)
+    public function useResultCache($useCache, $cacheLifetime = null): Query
     {
         $this->useResultCache = $useCache;
         $this->cacheLifetime = $cacheLifetime;
+
         return $this;
     }
 
     /**
      * Return the total hit count for the given query as provided by
      * the search engine.
+     *
+     * @return int
      */
-    public function count()
+    public function count(): int
     {
         return $this->count;
     }
@@ -179,7 +196,7 @@ class Query
     /**
      * @return array
      */
-    public function getFacets()
+    public function getFacets(): array
     {
         return $this->facets;
     }
@@ -192,26 +209,30 @@ class Query
      *
      * @param object $hydrationQuery
      * @param string $parameter
+     *
+     * @return Query
      */
-    public function hydrateWith($hydrationQuery, $parameter = null)
+    public function hydrateWith($hydrationQuery, $parameter = null): Query
     {
         $this->hydrationQuery = $hydrationQuery;
-        if ($parameter) {
+
+        if ($parameter)
             $this->hydrationParameter = $parameter;
-        }
+
         return $this;
     }
 
     /**
      * Return a provided hydration query
      *
+     * @throws DoctrineSearchException
+     *
      * @return object
      */
     protected function getHydrationQuery()
     {
-        if (!$this->hydrationQuery) {
+        if (!$this->hydrationQuery)
             throw new DoctrineSearchException('A hydration query is required for hydrating results to entities.');
-        }
 
         return $this->hydrationQuery;
     }
@@ -221,15 +242,18 @@ class Query
      *
      * @param integer $hydrationMode
      * @throws NoResultException
+     * @throws DoctrineSearchException
      * @return mixed
      */
     public function getSingleResult($hydrationMode = null)
     {
-        $this->query->setSize(1);
+        $this->query['size'] = 1;
+
         $results = $this->getResult($hydrationMode);
-        if (count($results) < 1) {
+
+        if (count($results) < 1)
             throw new NoResultException('No results found');
-        }
+
         return $results[0];
     }
 
@@ -242,44 +266,49 @@ class Query
      */
     public function getResult($hydrationMode = null)
     {
-        if ($hydrationMode) {
+        if ($hydrationMode)
             $this->hydrationMode = $hydrationMode;
-        }
 
-        $classes = array();
-        foreach (array_unique($this->entityClasses) as $entityClass) {
-            $classes[] = $this->sm->getClassMetadata($entityClass);
-        }
+        $result  = $this->getSearchManager()->getClient()->search($this->entityClass, $this->query);
+        $results = $this->getDocuments($result);
 
-        $resultSet = $this->getSearchManager()->getClient()->search($this->query, $classes);
-
-        // TODO: abstraction of support for different result sets
-        if ($resultSet instanceof Elastica\ResultSet) {
-            $this->count = $resultSet->getTotalHits();
-            $this->facets = $resultSet->getFacets();
-            $results = $resultSet->getResults();
-
-        } else {
-            $resultClass = get_class($resultSet);
-            throw new DoctrineSearchException("Unexpected result set class '$resultClass'");
-        }
+        $this->count = count($results);
+        $this->total = $result['hits']['total'] ?? 0;
 
         // Return results depending on hydration mode
         if ($this->hydrationMode == self::HYDRATE_BYPASS) {
-            return $resultSet;
+            return $results;
         } elseif ($this->hydrationMode == self::HYDRATE_INTERNAL) {
-            return $this->sm->getUnitOfWork()->hydrateCollection($classes, $resultSet);
+            return $this->sm->getUnitOfWork()->hydrateCollection($this->entityClass, $results);
         }
 
         // Document ids are used to lookup dbms results
-        $fn = function ($result) {
-            return (string) $result->getId();
-        };
-        $ids = array_map($fn, $results);
+        $ids = array_map(
+            function ($document) {
+                return $document['hits']['hits']['_id'];
+            },
+            $result
+        );
 
         return $this->getHydrationQuery()
             ->setParameter($this->hydrationParameter, $ids ?: null)
             ->useResultCache($this->useResultCache, $this->cacheLifetime)
-            ->getResult($this->hydrationMode);
+            ->getResult($this->hydrationMode)
+        ;
+    }
+
+    /**
+     * Parse ES array of results
+     *
+     * @param array $result
+     *
+     * @return array
+     */
+    private function getDocuments(array $result): array
+    {
+        if (empty($result['hits']['hits']))
+            return [];
+
+        return array_column($result['hits']['hits'], '_source');
     }
 }

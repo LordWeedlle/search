@@ -223,17 +223,16 @@ class UnitOfWork
      * Load and hydrate a document model
      *
      * @param ClassMetadata $class
-     * @param mixed $value
      * @param array $options
      */
-    public function load(ClassMetadata $class, $value, $options = array())
+    public function load(ClassMetadata $class, $options = array())
     {
         $client = $this->sm->getClient();
 
-        if (isset($options['field'])) {
-            $document = $client->findOneBy($class, $options['field'], $value);
+        if (isset($options['fields'])) {
+            $document = $client->findOneBy($class, $options['fields']);
         } else {
-            $document = $client->find($class, $value, $options);
+            $document = $client->find($class, $options['id'], $options);
         }
 
         return $this->hydrateEntity($class, $document);
@@ -242,32 +241,30 @@ class UnitOfWork
     /**
      * Load and hydrate a document collection
      *
-     * @param array $classes
-     * @param unknown $query
+     * @param ClassMetadata $class
+     * @param array         $query
+     *
+     * @return array|ArrayCollection
      */
-    public function loadCollection(array $classes, $query)
+    public function loadCollection(ClassMetadata $class, array $query)
     {
-        $results = $this->sm->getClient()->search($query, $classes);
-        return $this->hydrateCollection($classes, $results);
+        $results = $this->sm->getClient()->search($class, $query);
+        return $this->hydrateCollection($class, $results);
     }
 
     /**
      * Construct an entity collection
      *
-     * @param array $classes
-     * @param Traversable $resultSet
+     * @param ClassMetadata $class
+     * @param Traversable   $resultSet
+     *
+     * @return ArrayCollection
      */
-    public function hydrateCollection(array $classes, Traversable $resultSet)
+    public function hydrateCollection(ClassMetadata $class, Traversable $resultSet): ArrayCollection
     {
-        $collection = new ArrayCollection();
-        foreach ($resultSet as $document) {
-            foreach ($classes as $class) {
-                if ($document->getIndex() == $class->index && $document->getType() == $class->type) {
-                    break;
-                }
-            }
+        $collection = new ArrayCollection;
+        foreach ($resultSet as $document)
             $collection[] = $this->hydrateEntity($class, $document);
-        }
 
         return $collection;
     }

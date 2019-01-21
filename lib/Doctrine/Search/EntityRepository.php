@@ -19,10 +19,12 @@
 
 namespace Doctrine\Search;
 
+use Doctrine\Common\Collections\ArrayCollection;
 use Doctrine\Common\Persistence\ObjectRepository;
-use Doctrine\Search\SearchManager;
 use Doctrine\Search\Mapping\ClassMetadata;
 use Doctrine\Search\Exception\DoctrineSearchException;
+
+use UnexpectedValueException;
 
 class EntityRepository implements ObjectRepository
 {
@@ -32,12 +34,12 @@ class EntityRepository implements ObjectRepository
     protected $_entityName;
 
     /**
-     * @var \Doctrine\Search\Mapping\ClassMetadata
+     * @var ClassMetadata
      */
     private $_class;
 
     /**
-     * @var \Doctrine\Search\SearchManager
+     * @var SearchManager
      */
     private $_sm;
 
@@ -51,16 +53,18 @@ class EntityRepository implements ObjectRepository
     /**
      * Finds an object by its primary key / identifier.
      *
-     * @param mixed $id The identifier.
+     * @param string $id The identifier.
      * @return object The object.
      */
     public function find($id)
     {
-        return $this->_sm->find($this->_entityName, $id);
+        return $this->getSearchManager()->find($this->_entityName, $id);
     }
 
     /**
      * Finds all objects in the repository.
+     *
+     * @throws DoctrineSearchException
      *
      * @return mixed The objects.
      */
@@ -76,16 +80,19 @@ class EntityRepository implements ObjectRepository
      * an UnexpectedValueException if certain values of the sorting or limiting details are
      * not supported.
      *
-     * @throws \UnexpectedValueException
+     * @throws UnexpectedValueException
+     *
      * @param array $criteria
      * @param array|null $orderBy
      * @param int|null $limit
      * @param int|null $offset
-     * @return mixed The objects.
+     *
+     * @return array|ArrayCollection The objects.
      */
     public function findBy(array $criteria, array $orderBy = null, $limit = null, $offset = null)
     {
-        throw new DoctrineSearchException('Not yet implemented.');
+        // TODO: Do the shit
+        return $this->getSearchManager()->findBy($criteria, $orderBy, $limit, $offset);
     }
 
     /**
@@ -96,27 +103,27 @@ class EntityRepository implements ObjectRepository
      */
     public function findOneBy(array $criteria)
     {
-        $options = array('field' => key($criteria));
-        $value = current($criteria);
-        return $this->_sm->getUnitOfWork()->load($this->_class, $value, $options);
+        return $this->_sm->getUnitOfWork()->load($this->_class, ['fields' => $criteria]);
     }
 
     /**
      * Execute a direct search query on the associated index and type
      *
-     * @param object $query
+     * @param array $query
+     *
+     * @return array|ArrayCollection
      */
-    public function search($query)
+    public function search(array $query)
     {
-        return $this->_sm->getUnitOfWork()->loadCollection(array($this->_class), $query);
+        return $this->_sm->getUnitOfWork()->loadCollection($this->_class, $query);
     }
 
     /**
      * Execute a direct delete by query on the associated index and type
      *
-     * @param object $query
+     * @param array $query
      */
-    public function delete($query)
+    public function delete(array $query)
     {
         $this->_sm->getClient()->removeAll($this->_class, $query);
     }
