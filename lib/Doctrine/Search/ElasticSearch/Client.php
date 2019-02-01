@@ -19,16 +19,26 @@
 
 namespace Doctrine\Search\ElasticSearch;
 
-use Doctrine\Search\Exception\UnknownFieldException;
+use Doctrine\Search\Exception\DoctrineSearchException;
 use Doctrine\Search\SearchClientInterface;
 use Doctrine\Search\Mapping\ClassMetadata;
-use Doctrine\Search\Exception\NoResultException;
 
-use Elasticsearch\Client as ESClient;
-use Elasticsearch\ClientBuilder;
-use Elasticsearch\Common\Exceptions\Missing404Exception;
+use Elastica\Client as ElasticaClient;
+use Elastica\Query\AbstractQuery;
+use Elastica\Query\BoolQuery;
+use Elastica\Query\Term;
+use Elastica\ResultSet;
+use Elastica\Scroll;
+use Elastica\Type;
+use Elastica\Type\Mapping;
+use Elastica\Document;
+use Elastica\Index;
+use Elastica\Query\MatchAll;
+use Elastica\Exception\NotFoundException;
+use Elastica\Search;
 
 use Exception;
+use Iterator;
 
 /**
  * SearchManager for ElasticSearch-Backend
@@ -38,45 +48,46 @@ use Exception;
  */
 class Client implements SearchClientInterface
 {
-    const ELASTIC_SEARCH_MAX_RETRY = 5;
-
     /**
-     * @var ESClient
+     * @var ElasticaClient
      */
     private $client;
-
-    private $bulkData    = array();
 
     /**
      * Client constructor.
      *
      * @param string $hosts
      * @param int    $defaultPort
+     *
+     * @throws DoctrineSearchException
      */
     public function __construct(string $hosts, int $defaultPort)
     {
-        $this->client = ClientBuilder::create()
-            ->allowBadJSONSerialization()
-            ->setHosts(
-                array_map(
-                   function($host) use ($defaultPort) {
-                       list($host, $port) = array_pad(explode(':', $host, 2), 2, null);
-                       if (!$port)
-                           $port = $defaultPort;
+        $connections = [];
+        $hosts       = explode(',', $hosts);
 
-                       return "$host:$port";
-                   },
-                    explode(',', $hosts)
-                )
-            )
-            ->build()
-        ;
+        if (!$hosts)
+            throw new DoctrineSearchException('Cannot initialize client with empty hosts');
+
+        foreach ($hosts as $host) {
+            list($host, $port) = array_pad(explode(':', $host, 2), 2, null);
+
+            if (!$port)
+                $port = $defaultPort;
+
+            $connections[] = [
+                'host' => $host,
+                'port' => $port
+            ];
+        }
+
+        $this->client = new ElasticaClient(['connections' => $connections]);
     }
 
     /**
-     * @return ESClient
+     * @return ElasticaClient
      */
-    public function getClient(): ESClient
+    public function getClient(): ElasticaClient
     {
         return $this->client;
     }
@@ -84,24 +95,40 @@ class Client implements SearchClientInterface
     /**
      * {@inheritDoc}
      *
-     * @throws Missing404Exception
-     * @throws UnknownFieldException
      * @return Client
      */
     public function addDocuments(ClassMetadata $class, array $documents): Client
     {
-        foreach ($documents as $id => $document) {
-            $this->checkParameters($class, $document);
+        $bulk  = [];
+        $index = $this->getIndex($class->index);
+        $type  = $index->getType($class->type);
 
-            $this->addUpsertBulkData(
-                $class->index,
-                $class->type,
-                $id,
-                $document
-            );
+        foreach ($documents as $id => $document) {
+            $parameters = $this->getParameters($class->parameters);
+            $doc        = new Document($id);
+
+            foreach ($parameters as $name => $value) {
+                if (isset($document[$value])) {
+                    if (method_exists($doc, "set{$name}")) {
+                        $doc->{"set{$name}"}($document[$value]);
+                    } else {
+                        $doc->setParam($name, $document[$value]);
+                    }
+
+                    unset($document[$value]);
+                }
+            }
+
+            $bulk[] = $doc->setData($document);
         }
 
-        return $this->sendBulkData();
+        if (count($bulk) > 1) {
+            $type->addDocuments($bulk);
+        } else {
+            $type->addDocument($bulk[0]);
+        }
+
+        return $this;
     }
 
     /**
@@ -111,14 +138,13 @@ class Client implements SearchClientInterface
      */
     public function removeDocuments(ClassMetadata $class, array $documents): Client
     {
-        foreach (array_keys($documents) as $id)
-            $this->addDeleteBulkData(
-                $class->index,
-                $class->type,
-                $id
-            );
+        $this
+            ->getIndex($class->index)
+            ->getType($class->type)
+            ->deleteIds(array_keys($documents))
+        ;
 
-        return $this->sendBulkData();
+        return $this;
     }
 
     /**
@@ -128,7 +154,11 @@ class Client implements SearchClientInterface
      */
     public function removeAll(ClassMetadata $class, array $query = null): Client
     {
-        $this->deleteByQuery($class->index, $class->type, $query);
+        $this
+            ->getIndex($class->index)
+            ->getType($class->type)
+            ->deleteByQuery($query ?: new MatchAll)
+        ;
 
         return $this;
     }
@@ -136,44 +166,41 @@ class Client implements SearchClientInterface
     /**
      * {@inheritDoc}
      *
-     * @throws NoResultException
+     * @return Document|null
      */
-    public function find(ClassMetadata $class, $id, $options = []): array
+    public function find(ClassMetadata $class, $id, $options = [])
     {
         try {
-            return $this->getClient()->get(
-                [
-                    'index' => $class->index,
-                    'id'    => $id,
-                    'type'  => $class->type
-                ]
-            );
-        } catch (Missing404Exception $ex) {
-            throw new NoResultException;
+            return $this
+                ->getIndex($class->index)
+                ->getType($class->type)
+                ->getDocument($id, $options)
+            ;
+        } catch (NotFoundException $ex) {
+            return null;
         }
     }
 
     /**
      * {@inheritDoc}
      *
-     * @throws NoResultException
-     * @throws UnknownFieldException
      * @throws Exception
      *
-     * @return array
+     * @return array|null
      */
-    public function findOneBy(ClassMetadata $class, array $fields): array
+    public function findOneBy(ClassMetadata $class, array $fields)
     {
-        $this->checkParameters($class, $fields);
-
-        $must = [];
+        $must = new BoolQuery;
 
         foreach ($fields as $field => $value)
-            $must[] = $this->equalsQuery($field, $value);
+            $must->addMust(new Term([$field => $value]));
 
-        $result = $this->search($class, $this->buildQuery($this->andQuery($must)));
+        $results = $this->search($class, $must);
 
-        return $this->getSingleResult($result);
+        if (empty($results))
+            return null;
+
+        return $results[0];
     }
 
     /**
@@ -183,124 +210,176 @@ class Client implements SearchClientInterface
      *
      * @return array
      */
-    public function findAll(ClassMetadata $class): array
+    public function findBy(ClassMetadata $class, array $fields): array
     {
-        $result = $this->search($class, $this->buildQuery($this->matchAllQuery()));
+        $must = new BoolQuery;
 
-        return $this->getArrayResult($result);
-    }
+        foreach ($fields as $field => $value)
+            $must->addMust(new Term([$field => $value]));
 
-    /**
-     * {@inheritDoc}
-     */
-    public function search(ClassMetadata $class, array $query): array
-    {
-        return $this->getClient()->search(
-            $this->buildBody($class, $query)
-        );
+        $results = $this->search($class, $must);
+
+        return $results[0];
     }
 
     /**
      * {@inheritDoc}
      *
-     * @return array
+     * @throws Exception
+     *
+     * @return ResultSet
      */
-    public function createIndex($name, array $config = array()): array
+    public function findAll(ClassMetadata $class): ResultSet
+    {
+        return $this
+            ->buildQuery($class)
+            ->search()
+        ;
+    }
+
+    /**
+     * @param ClassMetadata $class
+     *
+     * @return Search
+     */
+    protected function buildQuery(ClassMetadata $class): Search
+    {
+        $searchQuery = new Search($this->getClient());
+        $searchQuery->setOption(Search::OPTION_VERSION, true);
+
+        if ($class->index) {
+            $index = $this->getIndex($class->index);
+            $searchQuery->addIndex($index);
+
+            if ($class->type)
+                $searchQuery->addType($index->getType($class->type));
+        }
+
+        return $searchQuery;
+    }
+
+    /**
+     * @param ClassMetadata $class
+     *
+     * @return Scroll
+     */
+    protected function buildScrollQuery(ClassMetadata $class): Scroll
+    {
+        $searchQuery = new Search($this->getClient());
+        $searchQuery->setOption(Search::OPTION_VERSION, true);
+
+        if ($class->index) {
+            $index = $this->getIndex($class->index);
+            $searchQuery->addIndex($index);
+
+            if ($class->type)
+                $searchQuery->addType($index->getType($class->type));
+        }
+
+        return new Scroll($searchQuery);
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * @return ResultSet
+     */
+    public function search(ClassMetadata $class, AbstractQuery $query): ResultSet
+    {
+        return $this
+            ->buildQuery($class)
+            ->search($query)
+        ;
+    }
+
+    /**
+     * {@inheritDoc}
+     */
+    public function scrollSearch(ClassMetadata $class): Iterator
+    {
+        return $this->buildScrollQuery($class);
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * @return Index
+     */
+    public function createIndex($name, array $config = array()): Index
+    {
+        $index = $this->getIndex($name);
+        $index->create($config, true);
+
+        return $index;
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * @return Index
+     */
+    public function getIndex(string $name): Index
     {
         return $this
             ->getClient()
-            ->indices()
-            ->create(
-                [
-                    'index' => $name,
-                    'body'  => $config
-                ]
-            )
+            ->getIndex($name)
         ;
     }
 
     /**
      * {@inheritDoc}
      *
-     * @return bool
+     * @return Client
      */
-    public function indexExists($name): bool
+    public function deleteIndex($index): Client
     {
-        return $this
-            ->getClient()
-            ->indices()
-            ->exists(
-                [
-                    'index' => $name
-                ]
-            )
+        $this
+            ->getIndex($index)
+            ->delete()
         ;
+
+        return $this;
     }
 
     /**
      * {@inheritDoc}
      *
-     * @return array
+     * @return Client
      */
-    public function deleteIndex($index): array
+    public function refreshIndex($index): Client
     {
-        return $this
-            ->getClient()
-            ->indices()
-            ->delete(
-                [
-                    'index' => $index
-                ]
-            )
+        $this
+            ->getIndex($index)
+            ->refresh()
         ;
+
+        return $this;
     }
 
     /**
      * {@inheritDoc}
      *
-     * @return array
+     * @return Type
      */
-    public function refreshIndex($index): array
+    public function createType(ClassMetadata $metadata): Type
     {
-        return $this
-            ->getClient()
-            ->indices()
-            ->refresh(
-                [
-                    'index' => $index
-                ]
-            )
-        ;
-    }
-
-    /**
-     * {@inheritDoc}
-     *
-     * @return array
-     */
-    public function createType(ClassMetadata $metadata): array
-    {
-        $mapping = $this->getRootMapping($metadata->rootMappings);
-
-        if (!isset($mapping['mapping']))
-            $mapping['mapping'] = $this->getMapping($metadata->fieldMappings);
-
+        $type           = $this->getIndex($metadata->index)->getType($metadata->type);
+        $properties     = $this->getMapping($metadata->fieldMappings);
+        $rootProperties = $this->getRootMapping($metadata->rootMappings);
+        $mapping        = new Mapping($type, $properties);
+        $mapping->disableSource($metadata->source);
         if (isset($metadata->boost))
-            $mapping['_boost'] = [
-                'name' => '_boost',
-                'null_value' => $metadata->boost
-            ];
+            $mapping->setParam('_boost', ['name' => '_boost', 'null_value' => $metadata->boost]);
 
         if (isset($metadata->parent))
-            $mapping['_prent'] = $metadata->parent;
+            $mapping->setParent($metadata->parent);
 
-        return $this
-            ->getClient()
-            ->indices()
-            ->putMapping(
-                $this->buildBody($metadata, $mapping)
-            )
-        ;
+        foreach ($rootProperties as $key => $value)
+            $mapping->setParam($key, $value);
+
+        $mapping->send();
+
+        return $type;
     }
 
     /**
@@ -388,20 +467,6 @@ class Client implements SearchClientInterface
     }
 
     /**
-     * @param ClassMetadata $class
-     * @param array         $fields
-     *
-     * @throws UnknownFieldException
-     */
-    private function checkParameters(ClassMetadata $class, array $fields)
-    {
-        $parameters = $this->getParameters($class->parameters);
-        foreach ($fields as $field => $value)
-            if (!in_array($field, array_keys($parameters)))
-                throw new UnknownFieldException($class->index, $class->type, $field);
-    }
-
-    /**
      * Generates parameter mapping from entity annotations
      *
      * @param array $paramMapping
@@ -475,338 +540,5 @@ class Client implements SearchClientInterface
         }
 
         return $properties;
-    }
-
-    /**
-     * Craft body from class matadata and query
-     *
-     * @param ClassMetadata $class
-     * @param array         $query
-     *
-     * @return array
-     */
-    private function buildBody(ClassMetadata $class, array $query): array
-    {
-        return [
-            'index' => $class->index,
-            'type'  => $class->type,
-            'body'  => $query
-        ];
-    }
-
-    /**
-     * Craft query from class matadata and query
-     *
-     * @param array $query
-     *
-     * @throws Exception
-     *
-     * @return array
-     */
-    private function buildQuery(array $query): array
-    {
-        return [
-            'query' => $query
-        ];
-    }
-
-    /**
-     * Compute common data
-     *
-     * @param string $index
-     * @param string $id
-     * @param string $type
-     * @param string $prefix
-     *
-     * @return array
-     */
-    private function prepareData(string $index, string $type, string $id, string $prefix = ''): array
-    {
-        return [
-            $prefix . 'index' => $index,
-            $prefix . 'type'  => $type,
-            $prefix . 'id'    => $id
-        ];
-    }
-
-    /**
-     * Add _retry_on_conflict security to common data
-     *
-     * @param string $index
-     * @param string $type
-     * @param string $id
-     * @param string $prefix
-     *
-     * @return array
-     */
-    private function prepareInsertData(string $index, string $type, string $id, string $prefix = ''): array
-    {
-        $data = $this->prepareData($index, $type, $id, $prefix);
-        $data[$prefix . 'retry_on_conflict'] = self::ELASTIC_SEARCH_MAX_RETRY;
-
-        return $data;
-    }
-
-    /**
-     * Add upsert data to send for bulk purpose
-     *
-     * @param string $index
-     * @param string $type
-     * @param string $id
-     * @param array  $data
-     *
-     * @return Client
-     */
-    public function addUpsertBulkData(string $index, string $type, string $id, array $data = []): Client
-    {
-        $index = [
-            'update' => $this->prepareInsertData($index, $type, $id, '_')
-        ];
-
-        if (!empty($data)) {
-            if (!isset($this->bulkData['body']))
-                $this->bulkData['body'] = [];
-
-            $this->bulkData['body'][] = $index;
-            $this->bulkData['body'][] = [
-                'doc' => $this->formatData($data),
-                'doc_as_upsert' => true
-            ];
-        }
-
-        return $this;
-    }
-
-    /**
-     * Add delete data to send for bulk purpose
-     *
-     * @param string $index
-     * @param string $type
-     * @param string $id
-     *
-     * @return Client
-     */
-    public function addDeleteBulkData(string $index, string $type, string $id): Client
-    {
-        $this->bulkData['body'][] = [
-            'delete' => $this->prepareData($index, $type, $id, '_')
-        ];
-
-        return $this;
-    }
-
-    // FIXME: Exceptions!!
-    /**
-     * Send bulk data to ES
-     *
-     * @return Client
-     */
-    public function sendBulkData(): Client
-    {
-        if (empty($this->bulkData))
-            return;
-
-        try {
-            $response = $this->bulk($this->bulkData);
-
-            if (isset($response['errors']) && $response['errors'])
-                throw new ElasticSearchRequestErrorException('Elastic search request error, response: ' . json_encode($response));
-        } catch (ElasticsearchException $e) {
-            if ($e instanceof Missing404Exception && $this->allowNotFound($action))
-                return;
-
-            $canRetryExceptions = [
-                MaxRetriesException::class,
-                NoNodesAvailableException::class,
-                NoShardAvailableException::class,
-                RequestTimeout408Exception::class
-            ];
-
-            if (in_array(get_class($e), $canRetryExceptions))
-                throw new ElasticSearchReschedulableException('An elastic search reschedulable exception occurs: ' . get_class($e), 0, $e);
-
-            throw $e;
-        }
-
-        $this->bulkData = [];
-
-        return $this;
-    }
-
-    /**
-     * Format xxxByQuery data
-     *
-     * @param string $index
-     * @param string $type
-     * @param array  $query
-     * @param array  $data
-     *
-     * @return array
-     */
-    public function formatBatchByQueryData(string $index, string $type, array $query, array $data = [])
-    {
-        $source = '';
-        $body   = [
-            'query' => $query
-        ];
-
-        if ($data) {
-            foreach ($data as $property => $datum)
-                $source .= "ctx._source['$property'] = params.$property;";
-
-            $body['script'] = [
-                'inline' => $source,
-                'params' => $data
-            ];
-        }
-
-        return [
-            'index'     => $index,
-            'type'      => $type,
-            'conflicts' => 'proceed',
-            'body'      => $body
-        ];
-    }
-
-    /**
-     * Update multiple documents corresponding to $data
-     *
-     * @param string $index
-     * @param string $type
-     * @param array  $query
-     * @param array  $data
-     *
-     * @return array
-     */
-    public function updateByQuery(string $index, string $type, array $query, array $data): array
-    {
-        return $this->getClient()->updateByQuery(
-            $this->formatBatchByQueryData(
-                $index,
-                $type,
-                $query,
-                $data
-            )
-        );
-    }
-
-    /**
-     * Delete multiple documents corresponding to $data
-     *
-     * @param string $index
-     * @param string $type
-     * @param array  $query
-     *
-     * @return array
-     */
-    public function deleteByQuery(string $index, string $type, array $query): array
-    {
-        return $this->getClient()->deleteByQuery(
-            $this->formatBatchByQueryData(
-                $index,
-                $type,
-                $query
-            )
-        );
-    }
-
-    /**
-     * Parse ES array of results
-     *
-     * @param array $result
-     *
-     * @return array
-     */
-    public function getArrayResult(array $result): array
-    {
-        if (empty($result['hits']['hits']))
-            return [];
-
-        return array_column($result['hits']['hits'], '_source');
-    }
-
-    /**
-     * Parse ES single result
-     *
-     * @param array $result
-     *
-     * @throws NoResultException
-     * @return array
-     */
-    public function getSingleResult(array $result): array
-    {
-        $results = $this->getArrayResult($result);
-
-        if (empty($results))
-            throw new NoResultException();
-
-        return $results[0];
-    }
-
-    /**
-     * @return array
-     */
-    public function matchAllQuery(): array
-    {
-        return [
-            'match_all' => (object)[]
-        ];
-    }
-
-    /**
-     * Ensure there are arguments given to function
-     *
-     * @param array  $args
-     * @param string $functionName
-     *
-     * @throws Exception
-     */
-    public function checkEmptyArguments(array $args, string $functionName)
-    {
-        if (empty($args))
-            throw new Exception("Now arguments given to $functionName");
-    }
-
-    /**
-     * Format an "and" statement for ES
-     *
-     * @return array
-     * @throws Exception
-     */
-    public function andQuery(): array
-    {
-        $args = func_get_args();
-
-        $this->checkEmptyArguments($args, 'andQuery');
-
-        return [
-            'bool' => [
-                'must' => $args
-            ]
-        ];
-    }
-
-    /**
-     * Format an "equals" statement for ES
-     *
-     * @param string     $field
-     * @param            $value
-     * @param float|null $boost
-     *
-     * @return array
-     */
-    public function equalsQuery(string $field, $value, float $boost = null): array
-    {
-        if (!is_null($boost))
-            $value = [
-                'query' => $value,
-                'boost' => $boost
-            ];
-
-        return [
-            'match' => [
-                $field => $value
-            ]
-        ];
     }
 }

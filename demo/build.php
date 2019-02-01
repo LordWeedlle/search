@@ -14,14 +14,14 @@ $metadatas = $sm->getMetadataFactory()->getAllMetadata();
 
 // Delete indexes
 foreach ($metadatas as $metadata) {
-    if ($client->indexExists($metadata->index)) {
+    if ($client->getIndex($metadata->index)) {
         $client->deleteIndex($metadata->index);
     }
 }
 
 // Recreate indexes and types
 foreach ($metadatas as $metadata) {
-    if (!$client->indexExists($metadata->index)) {
+    if (!$client->getIndex($metadata->index)) {
         $client->createIndex($metadata->index);
     }
     $client->createType($metadata);

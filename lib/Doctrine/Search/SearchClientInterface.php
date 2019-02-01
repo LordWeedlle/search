@@ -22,6 +22,10 @@ namespace Doctrine\Search;
 use Doctrine\Search\Exception\NoResultException;
 use Doctrine\Search\Mapping\ClassMetadata;
 
+use Elastica\Query\AbstractQuery;
+
+use Iterator;
+
 /**
  * Interface for a Doctrine SearchManager class to implement.
  *
@@ -35,7 +39,6 @@ interface SearchClientInterface
      * @param ClassMetadata $class
      * @param mixed $id
      * @param array $options
-     * @throws NoResultException
      */
     public function find(ClassMetadata $class, $id, $options = array());
 
@@ -50,6 +53,16 @@ interface SearchClientInterface
     public function findOneBy(ClassMetadata $class, array $fields);
 
     /**
+     * Finds documents by specified fields and values.
+     *
+     * @param ClassMetadata $class
+     * @param array $fields
+     *
+     * @throws NoResultException
+     */
+    public function findBy(ClassMetadata $class, array $fields);
+
+    /**
      * Finds all documents
      *
      * @param ClassMetadata $class
@@ -60,9 +73,18 @@ interface SearchClientInterface
      * Finds documents by a specific query.
      *
      * @param ClassMetadata $class
-     * @param array         $query
+     * @param AbstractQuery $query
      */
-    public function search(ClassMetadata $class, array $query);
+    public function search(ClassMetadata $class, AbstractQuery $query);
+
+    /**
+     * Finds documents by a specific scroll query.
+     *
+     * @param ClassMetadata $class
+     *
+     * @return Iterator
+     */
+    public function scrollSearch(ClassMetadata $class);
 
     /**
      * Creates a document index
@@ -77,7 +99,7 @@ interface SearchClientInterface
      *
      * @param string $name The name of the index.
      */
-    public function indexExists($name);
+    public function getIndex(string $name);
 
     /**
      * Deletes an index and its types and documents

@@ -19,9 +19,15 @@
 
 namespace Doctrine\Search;
 
+use Doctrine\Common\Persistence\Mapping\MappingException;
 use Doctrine\Common\Persistence\ObjectManager;
+use Doctrine\ORM\EntityManager;
 use Doctrine\Search\Exception\UnexpectedTypeException;
 use Doctrine\Common\EventManager;
+use Doctrine\Search\Mapping\ClassMetadata;
+use Doctrine\Search\Mapping\ClassMetadataFactory;
+
+use ReflectionException;
 
 /**
  * Interface for a Doctrine SearchManager class to implement.
@@ -41,7 +47,7 @@ class SearchManager implements ObjectManager
     private $configuration;
 
     /**
-     * @var \Doctrine\Search\Mapping\ClassMetadataFactory
+     * @var ClassMetadataFactory
      */
     private $metadataFactory;
 
@@ -58,7 +64,7 @@ class SearchManager implements ObjectManager
     /**
      * The event manager that is the central point of the event system.
      *
-     * @var \Doctrine\Common\EventManager
+     * @var EventManager
      */
     private $eventManager;
 
@@ -72,7 +78,7 @@ class SearchManager implements ObjectManager
     /**
      * The UnitOfWork used to coordinate object-level transactions.
      *
-     * @var \Doctrine\Search\UnitOfWork
+     * @var UnitOfWork
      */
     private $unitOfWork;
 
@@ -111,9 +117,9 @@ class SearchManager implements ObjectManager
     }
 
     /**
-     * @return ObjectManager|\Doctrine\ORM\EntityManager
+     * @return ObjectManager|EntityManager
      */
-    public function getEntityManager()
+    public function getEntityManager(): ObjectManager
     {
         return $this->entityManager;
     }
@@ -121,7 +127,7 @@ class SearchManager implements ObjectManager
     /**
      * @return Configuration
      */
-    public function getConfiguration()
+    public function getConfiguration(): Configuration
     {
         return $this->configuration;
     }
@@ -129,9 +135,9 @@ class SearchManager implements ObjectManager
     /**
      * Gets the UnitOfWork used by the SearchManager to coordinate operations.
      *
-     * @return \Doctrine\Search\UnitOfWork
+     * @return UnitOfWork
      */
-    public function getUnitOfWork()
+    public function getUnitOfWork(): UnitOfWork
     {
         return $this->unitOfWork;
     }
@@ -139,9 +145,9 @@ class SearchManager implements ObjectManager
     /**
      * Gets the EventManager used by the SearchManager.
      *
-     * @return \Doctrine\Common\EventManager
+     * @return EventManager
      */
-    public function getEventManager()
+    public function getEventManager(): EventManager
     {
         return $this->eventManager;
     }
@@ -151,17 +157,20 @@ class SearchManager implements ObjectManager
      *
      * @param string $className
      *
-     * @return \Doctrine\Search\Mapping\ClassMetadata
+     * @throws MappingException
+     * @throws ReflectionException
+     *
+     * @return ClassMetadata
      */
-    public function getClassMetadata($className)
+    public function getClassMetadata($className): ClassMetadata
     {
         return $this->metadataFactory->getMetadataFor($className);
     }
 
     /**
-     * @return Mapping\ClassMetadataFactory
+     * @return ClassMetadataFactory
      */
-    public function getClassMetadataFactory()
+    public function getClassMetadataFactory(): ClassMetadataFactory
     {
         return $this->metadataFactory;
     }
@@ -169,7 +178,7 @@ class SearchManager implements ObjectManager
     /**
      * @return SearchClientInterface
      */
-    public function getClient()
+    public function getClient(): SearchClientInterface
     {
         return $this->client;
     }
@@ -177,21 +186,24 @@ class SearchManager implements ObjectManager
     /**
      * @return SerializerInterface
      */
-    public function getSerializer()
+    public function getSerializer(): SerializerInterface
     {
         return $this->serializer;
     }
 
     /**
-     * @return \Doctrine\Search\Mapping\ClassMetadataFactory
+     * @return ClassMetadataFactory
      */
-    public function getMetadataFactory()
+    public function getMetadataFactory(): ClassMetadataFactory
     {
         return $this->metadataFactory;
     }
 
     /**
      * {@inheritDoc}
+     *
+     * @throws MappingException
+     * @throws ReflectionException
      */
     public function find($entityName, $id)
     {
@@ -205,6 +217,7 @@ class SearchManager implements ObjectManager
         }
 
         $class = $this->getClassMetadata($entityName);
+
         return $this->unitOfWork->load($class, $options);
     }
 
@@ -261,6 +274,9 @@ class SearchManager implements ObjectManager
      *
      * @param string $entityName The name of the entity.
      * @return EntityRepository The repository class.
+     *
+     * @throws MappingException
+     * @throws ReflectionException
      */
     public function getRepository($entityName)
     {
@@ -280,13 +296,17 @@ class SearchManager implements ObjectManager
      *
      * @param array $entityNames The names of the entities.
      * @return EntityRepositoryCollection The repository class.
+     *
+     * @throws MappingException
+     * @throws ReflectionException
      */
     public function getRepositories(array $entityNames)
     {
         $repositoryCollection = new EntityRepositoryCollection($this);
-        foreach ($entityNames as $entityName) {
+
+        foreach ($entityNames as $entityName)
             $repositoryCollection->addRepository($this->getRepository($entityName));
-        }
+
         return $repositoryCollection;
     }
 
@@ -296,7 +316,7 @@ class SearchManager implements ObjectManager
      *
      * @return Query
      */
-    public function createQuery()
+    public function createQuery(): Query
     {
         return new Query($this);
     }

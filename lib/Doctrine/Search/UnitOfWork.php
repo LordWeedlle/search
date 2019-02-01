@@ -19,51 +19,57 @@
 
 namespace Doctrine\Search;
 
-use Doctrine\Search\SearchManager;
+use Doctrine\Common\EventManager;
+use Doctrine\Common\Persistence\Mapping\MappingException;
 use Doctrine\Search\Exception\DoctrineSearchException;
 use Doctrine\Common\Collections\ArrayCollection;
+use Doctrine\Search\Exception\NoResultException;
 use Doctrine\Search\Mapping\ClassMetadata;
+
+use Elastica\Query\AbstractQuery;
+
+use ReflectionException;
 use Traversable;
+use Iterator;
 
 class UnitOfWork
 {
     /**
      * The SearchManager that "owns" this UnitOfWork instance.
      *
-     * @var \Doctrine\Search\SearchManager
+     * @var SearchManager
      */
     private $sm;
 
     /**
      * The EventManager used for dispatching events.
      *
-     * @var \Doctrine\Common\EventManager
+     * @var EventManager
      */
     private $evm;
 
     /**
      * @var array
      */
-    private $scheduledForPersist = array();
+    private $scheduledForPersist = [];
+    /**
+     * @var array
+     */
+    private $scheduledForDelete = [];
 
     /**
      * @var array
      */
-    private $scheduledForDelete = array();
-
-    /**
-     * @var array
-     */
-    private $updatedIndexes = array();
+    private $updatedIndexes = [];
 
     /**
      * Initializes a new UnitOfWork instance, bound to the given SearchManager.
      *
-     * @param \Doctrine\Search\EntityManager $sm
+     * @param SearchManager $sm
      */
     public function __construct(SearchManager $sm)
     {
-        $this->sm = $sm;
+        $this->sm  = $sm;
         $this->evm = $sm->getEventManager();
     }
 
@@ -74,16 +80,14 @@ class UnitOfWork
      */
     public function persist($entity)
     {
-        if ($this->evm->hasListeners(Events::prePersist)) {
+        if ($this->evm->hasListeners(Events::prePersist))
             $this->evm->dispatchEvent(Events::prePersist, new Event\LifecycleEventArgs($entity, $this->sm));
-        }
 
         $oid = spl_object_hash($entity);
         $this->scheduledForPersist[$oid] = $entity;
 
-        if ($this->evm->hasListeners(Events::postPersist)) {
+        if ($this->evm->hasListeners(Events::postPersist))
             $this->evm->dispatchEvent(Events::postPersist, new Event\LifecycleEventArgs($entity, $this->sm));
-        }
     }
 
     /**
@@ -93,16 +97,14 @@ class UnitOfWork
      */
     public function remove($entity)
     {
-        if ($this->evm->hasListeners(Events::preRemove)) {
+        if ($this->evm->hasListeners(Events::preRemove))
             $this->evm->dispatchEvent(Events::preRemove, new Event\LifecycleEventArgs($entity, $this->sm));
-        }
 
         $oid = spl_object_hash($entity);
         $this->scheduledForDelete[$oid] = $entity;
 
-        if ($this->evm->hasListeners(Events::postRemove)) {
+        if ($this->evm->hasListeners(Events::postRemove))
             $this->evm->dispatchEvent(Events::postRemove, new Event\LifecycleEventArgs($entity, $this->sm));
-        }
     }
 
     /**
@@ -110,19 +112,18 @@ class UnitOfWork
      *
      * @param string $entityName if given, only entities of this type will get detached
      */
-    public function clear($entityName = null)
+    public function clear(string $entityName = null)
     {
         if ($entityName === null) {
             $this->scheduledForDelete =
             $this->scheduledForPersist =
-            $this->updatedIndexes = array();
+            $this->updatedIndexes = [];
         } else {
             //TODO: implement for named entity classes
         }
 
-        if ($this->evm->hasListeners(Events::onClear)) {
+        if ($this->evm->hasListeners(Events::onClear))
             $this->evm->dispatchEvent(Events::onClear, new Event\OnClearEventArgs($this->sm, $entityName));
-        }
     }
 
     /**
@@ -135,34 +136,37 @@ class UnitOfWork
      * 2) All entity deletions
      *
      * @param null|object|array $entity
+     *
+     * @throws DoctrineSearchException
+     * @throws MappingException
+     * @throws ReflectionException
      */
     public function commit($entity = null)
     {
-        if ($this->evm->hasListeners(Events::preFlush)) {
+        if ($this->evm->hasListeners(Events::preFlush))
             $this->evm->dispatchEvent(Events::preFlush, new Event\PreFlushEventArgs($this->sm));
-        }
 
         //TODO: single/array entity commit handling
         $this->commitRemoved();
         $this->commitPersisted();
 
         //Force refresh of updated indexes
-        if ($entity === true) {
-            $client = $this->sm->getClient();
-            foreach (array_unique($this->updatedIndexes) as $index) {
-                $client->refreshIndex($index);
-            }
-        }
+        if ($entity === true)
+            foreach (array_unique($this->updatedIndexes) as $index)
+                $this->sm->getClient()->refreshIndex($index);
 
         $this->clear();
 
-        if ($this->evm->hasListeners(Events::postFlush)) {
+        if ($this->evm->hasListeners(Events::postFlush))
             $this->evm->dispatchEvent(Events::postFlush, new Event\PostFlushEventArgs($this->sm));
-        }
     }
 
     /**
      * Commit persisted entities to the database
+     *
+     * @throws DoctrineSearchException
+     * @throws MappingException
+     * @throws ReflectionException
      */
     private function commitPersisted()
     {
@@ -170,24 +174,30 @@ class UnitOfWork
         $client = $this->sm->getClient();
 
         foreach ($sortedDocuments as $entityName => $documents) {
-            $classMetadata = $this->sm->getClassMetadata($entityName);
+            $classMetadata          = $this->sm->getClassMetadata($entityName);
             $this->updatedIndexes[] = $classMetadata->index;
+
             $client->addDocuments($classMetadata, $documents);
         }
     }
 
     /**
      * Commit deleted entities to the database
+     *
+     * @throws DoctrineSearchException
+     * @throws MappingException
+     * @throws ReflectionException
      */
     private function commitRemoved()
     {
         $documents = $this->sortObjects($this->scheduledForDelete, false);
         $client = $this->sm->getClient();
 
-        foreach ($documents as $entityName => $documents) {
-            $classMetadata = $this->sm->getClassMetadata($entityName);
+        foreach ($documents as $entityName => $document) {
+            $classMetadata          = $this->sm->getClassMetadata($entityName);
             $this->updatedIndexes[] = $classMetadata->index;
-            $client->removeDocuments($classMetadata, $documents);
+
+            $client->removeDocuments($classMetadata, $document);
         }
     }
 
@@ -198,6 +208,7 @@ class UnitOfWork
      * @param array $objects
      * @param boolean $serialize
      * @throws DoctrineSearchException
+     *
      * @return array
      */
     private function sortObjects(array $objects, $serialize = true)
@@ -209,9 +220,8 @@ class UnitOfWork
             $document = $serialize ? $serializer->serialize($object) : $object;
 
             $id = (string) $object->getId();
-            if (!$id) {
+            if (!$id)
                 throw new DoctrineSearchException('Entity must have an id to be indexed');
-            }
 
             $documents[get_class($object)][$id] = $document;
         }
@@ -224,6 +234,8 @@ class UnitOfWork
      *
      * @param ClassMetadata $class
      * @param array $options
+     *
+     * @throws NoResultException
      */
     public function load(ClassMetadata $class, $options = array())
     {
@@ -238,18 +250,27 @@ class UnitOfWork
         return $this->hydrateEntity($class, $document);
     }
 
+    public function find(ClassMetadata $class, $id, array $options = [])
+    {
+        return $this->hydrateEntity($class, $this->sm->getClient()->find($class, $id, $options));
+    }
+
+    public function findAll(ClassMetadata $class): Iterator
+    {
+        return $this->sm->getClient()->scrollSearch($class);
+    }
+
     /**
      * Load and hydrate a document collection
      *
      * @param ClassMetadata $class
-     * @param array         $query
+     * @param AbstractQuery $query
      *
      * @return array|ArrayCollection
      */
-    public function loadCollection(ClassMetadata $class, array $query)
+    public function loadCollection(ClassMetadata $class, AbstractQuery $query)
     {
-        $results = $this->sm->getClient()->search($class, $query);
-        return $this->hydrateCollection($class, $results);
+        return $this->hydrateCollection($class, $this->sm->getClient()->search($class, $query));
     }
 
     /**

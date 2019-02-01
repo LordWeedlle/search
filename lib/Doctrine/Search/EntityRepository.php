@@ -21,9 +21,15 @@ namespace Doctrine\Search;
 
 use Doctrine\Common\Collections\ArrayCollection;
 use Doctrine\Common\Persistence\ObjectRepository;
+use Doctrine\Search\Exception\NoResultException;
 use Doctrine\Search\Mapping\ClassMetadata;
-use Doctrine\Search\Exception\DoctrineSearchException;
 
+use Elastica\Query as BaseQuery;
+use Elastica\Query\AbstractQuery;
+use Elastica\Query\BoolQuery;
+use Elastica\Query\Term;
+
+use Iterator;
 use UnexpectedValueException;
 
 class EntityRepository implements ObjectRepository
@@ -45,9 +51,9 @@ class EntityRepository implements ObjectRepository
 
     public function __construct(SearchManager $sm, ClassMetadata $class)
     {
-        $this->_sm = $sm;
+        $this->_sm         = $sm;
         $this->_entityName = $class->className;
-        $this->_class = $class;
+        $this->_class      = $class;
     }
 
     /**
@@ -58,19 +64,17 @@ class EntityRepository implements ObjectRepository
      */
     public function find($id)
     {
-        return $this->getSearchManager()->find($this->_entityName, $id);
+        return $this->getSearchManager()->getUnitOfWork()->find($this->getClassMetadata(), $id);
     }
 
     /**
-     * Finds all objects in the repository.
+     * Return an Iterator to find all objects in the repository.
      *
-     * @throws DoctrineSearchException
-     *
-     * @return mixed The objects.
+     * @return Iterator
      */
     public function findAll()
     {
-        throw new DoctrineSearchException('Not yet implemented.');
+        return $this->getSearchManager()->getUnitOfWork()->findAll($this->getClassMetadata());
     }
 
     /**
@@ -91,31 +95,42 @@ class EntityRepository implements ObjectRepository
      */
     public function findBy(array $criteria, array $orderBy = null, $limit = null, $offset = null)
     {
-        // TODO: Do the shit
-        return $this->getSearchManager()->findBy($criteria, $orderBy, $limit, $offset);
+        $must = new BoolQuery();
+
+        foreach ($criteria as $field => $value)
+            $must->addMust(new Term([$field => $value]));
+
+        $baseQuery = new BaseQuery($must);
+
+        $query = new Query($this->getSearchManager());
+        $query->searchWith($baseQuery);
+
+        return $this->getSearchManager()->getUnitOfWork()->loadCollection($this->getClassMetadata(), $query);
     }
 
     /**
      * Finds a single object by a set of criteria.
      *
      * @param array $criteria
-     * @return object The object.
+     *
+     * @return object
+     * @throws NoResultException
      */
     public function findOneBy(array $criteria)
     {
-        return $this->_sm->getUnitOfWork()->load($this->_class, ['fields' => $criteria]);
+        return $this->getSearchManager()->getUnitOfWork()->load($this->getClassMetadata(), ['fields' => $criteria]);
     }
 
     /**
      * Execute a direct search query on the associated index and type
      *
-     * @param array $query
+     * @param AbstractQuery $query
      *
      * @return array|ArrayCollection
      */
-    public function search(array $query)
+    public function search(AbstractQuery $query)
     {
-        return $this->_sm->getUnitOfWork()->loadCollection($this->_class, $query);
+        return $this->getSearchManager()->getUnitOfWork()->loadCollection($this->getClassMetadata(), $query);
     }
 
     /**
@@ -125,7 +140,7 @@ class EntityRepository implements ObjectRepository
      */
     public function delete(array $query)
     {
-        $this->_sm->getClient()->removeAll($this->_class, $query);
+        $this->getSearchManager()->getClient()->removeAll($this->getClassMetadata(), $query);
     }
 
     /**
@@ -133,7 +148,7 @@ class EntityRepository implements ObjectRepository
      *
      * @return string
      */
-    public function getClassName()
+    public function getClassName(): string
     {
         return $this->_entityName;
     }
@@ -141,9 +156,9 @@ class EntityRepository implements ObjectRepository
     /**
      * Returns the class metadata managed by the repository
      *
-     * @return string
+     * @return ClassMetadata
      */
-    public function getClassMetadata()
+    public function getClassMetadata(): ClassMetadata
     {
         return $this->_class;
     }
@@ -151,9 +166,9 @@ class EntityRepository implements ObjectRepository
     /**
      * Returns the search manager
      *
-     * @return \Doctrine\Search\SearchManager
+     * @return SearchManager
      */
-    public function getSearchManager()
+    public function getSearchManager(): SearchManager
     {
         return $this->_sm;
     }

@@ -13,10 +13,10 @@
     ],
     "require": {
         "php": ">=7.0",
-        "doctrine/common": ">=2.3.0"
+        "doctrine/common": ">=2.3.0",
+        "ruflin/Elastica": "6.1.0"
     },
     "suggest": {
-        "elasticsearch/elasticsearch": "Elastic search PHP  version correlating to your ElasticSearch installation is required.",
         "symfony/yaml": "If you want to use YAML Metadata Mapping Driver"
     },
     "require-dev": {

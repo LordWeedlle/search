@@ -22,6 +22,6 @@ class PagerfantaAdapter implements AdapterInterface
 
     public function getNbResults()
     {
-        return $this->query->count();
+        return $this->query->total();
     }
 }
